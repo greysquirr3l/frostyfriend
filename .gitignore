@@ -26,7 +26,7 @@ go.work
 *.db
 
 # Built binary
-/keeper-bot
+/frostyfriend
 /main
 
 # OS generated files
@@ -38,6 +38,4 @@ go.work
 ehthumbs.db
 Thumbs.db
 
-allcode.txt
-.yamllint
 vendor
