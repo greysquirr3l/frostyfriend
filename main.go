@@ -1,4 +1,3 @@
-// main.go
 package main
 
 import (
@@ -11,10 +10,56 @@ import (
 	"syscall"
 	"time"
 
-	"frostyfriend/internal/locate"
-
 	"gocv.io/x/gocv"
 )
+
+// IsAppRunning checks if the Whiteout Survival game is running using AppleScript
+func IsAppRunning(appName string) bool {
+	script := `
+        tell application "System Events"
+            count (every process whose name is "` + appName + `")
+        end tell
+    `
+	cmd := exec.Command("osascript", "-e", script)
+	out, err := cmd.Output()
+	if err != nil {
+		log.Printf("Error detecting application: %v", err)
+		return false
+	}
+
+	// If the output is "0", the app is not running
+	if string(out) == "0\n" {
+		log.Printf("%s is not running", appName)
+		return false
+	}
+	log.Printf("%s is running", appName)
+	return true
+}
+
+// LocateWindow finds the position of the application window using AppleScript
+func LocateWindow(appName string) (int, int, int, int, error) {
+	script := `
+        tell application "System Events"
+            get position of front window of application process "` + appName + `"
+        end tell
+    `
+	cmd := exec.Command("osascript", "-e", script)
+	out, err := cmd.Output()
+	if err != nil {
+		return 0, 0, 0, 0, fmt.Errorf("Could not locate window: %v", err)
+	}
+
+	var x, y, width, height int
+	fmt.Sscanf(string(out), "{%d, %d}", &x, &y)
+
+	// Simulate window size for now
+	width, height = 800, 600
+
+	// Log only when the window is successfully found
+	log.Printf("Window found: (%d, %d) with size (%d, %d)\n", x, y, width, height)
+
+	return x, y, width, height, nil
+}
 
 // LoadImages loads all PNG images from the images folder into a matrix
 func LoadImages(folderPath string) (map[string]gocv.Mat, error) {
@@ -40,6 +85,27 @@ func LoadImages(folderPath string) (map[string]gocv.Mat, error) {
 	}
 
 	return images, nil
+}
+
+// SearchAndClick searches for an image and clicks if found
+func SearchAndClick(image gocv.Mat, screen gocv.Mat) bool {
+	result := gocv.NewMat()
+	mask := gocv.NewMat() // Empty mask since we don't need one
+	defer mask.Close()
+
+	gocv.MatchTemplate(screen, image, &result, gocv.TmCcoeffNormed, mask)
+
+	_, maxVal, _, maxLoc := gocv.MinMaxLoc(result)
+
+	if maxVal >= 0.9 {
+		log.Printf("Image found with match value: %.2f at position: (%d, %d)", maxVal, maxLoc.X, maxLoc.Y)
+		// Simulate click (you can replace this with your actual click simulation)
+		exec.Command("cliclick", fmt.Sprintf("c:%d,%d", maxLoc.X, maxLoc.Y)).Run()
+		return true
+	}
+
+	log.Println("Image not found")
+	return false
 }
 
 func main() {
@@ -72,8 +138,8 @@ func main() {
 	// Check if Whiteout Survival is running and monitor it every second
 	appName := "Whiteout Survival"
 	for {
-		if locate.IsAppRunning(appName) {
-			x, y, width, height, err := locate.LocateWindow(appName)
+		if IsAppRunning(appName) {
+			x, y, width, height, err := LocateWindow(appName)
 			if err != nil {
 				log.Printf("Error locating window: %v", err)
 			} else {
@@ -100,22 +166,4 @@ func main() {
 
 		time.Sleep(1 * time.Second)
 	}
-}
-
-// SearchAndClick searches for an image and clicks if found
-func SearchAndClick(image gocv.Mat, screen gocv.Mat) bool {
-	result := gocv.NewMat()
-	gocv.MatchTemplate(screen, image, &result, gocv.TmCcoeffNormed)
-
-	_, maxVal, _, maxLoc := gocv.MinMaxLoc(result)
-
-	if maxVal >= 0.9 {
-		log.Printf("Image found with match value: %.2f at position: (%d, %d)", maxVal, maxLoc.X, maxLoc.Y)
-		// Simulate click (you can replace this with your actual click simulation)
-		exec.Command("cliclick", fmt.Sprintf("c:%d,%d", maxLoc.X, maxLoc.Y)).Run()
-		return true
-	}
-
-	log.Println("Image not found")
-	return false
 }
