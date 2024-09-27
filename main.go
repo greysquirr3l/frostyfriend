@@ -1,3 +1,4 @@
+// main.go
 package main
 
 import (
@@ -10,7 +11,7 @@ import (
 	"syscall"
 	"time"
 
-	"myproject/locate"
+	"frostyfriend/internal/locate"
 
 	"gocv.io/x/gocv"
 )
