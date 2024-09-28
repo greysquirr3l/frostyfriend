@@ -38,4 +38,6 @@ go.work
 ehthumbs.db
 Thumbs.db
 
+img_old
 vendor
+app.log
