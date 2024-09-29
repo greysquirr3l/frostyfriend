@@ -1,6 +1,6 @@
 # 🎮 Whiteout Survival Helper 🤖
 
-Automate your Whiteout Survival gameplay with this nifty helper script! 🚀
+Automate some of Whiteout Survival gameplay with this nifty helper! 🚀
 
 ## 🌟 Features
 
@@ -73,6 +73,8 @@ The script will provide real-time feedback on its progress:
 - ⏱️ Time until the next iteration
 
 ## ⚠️ Disclaimer
+
+This script relies on AppleScript and screencapture from MacOS.  It was tested on macOS 10.15.
 
 This script is for educational purposes only. Use it responsibly and at your own risk. Automating gameplay may violate the terms of service of some games.
 
