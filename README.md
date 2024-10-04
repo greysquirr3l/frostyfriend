@@ -33,6 +33,8 @@ Automate some of Whiteout Survival gameplay with this nifty helper! 🚀
 
 ## 🏃‍♂️ Usage
 
+Set the WOS window to any screen that can see the Alliance Help popup.  If you are on a screen where the popup is not displayed, the script will still try to identify it, but it won't do anything because it won't find it.
+
 Run the script with the following command:
 
 ```
