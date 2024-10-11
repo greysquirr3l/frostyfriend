@@ -1,11 +1,10 @@
+// main.go - revision 6
+
 package main
 
 import (
-	"context"
 	"flag"
 	"fmt"
-	"image"
-	"image/color"
 	"log"
 	"math/rand"
 	"os"
@@ -14,8 +13,12 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
+
+	"image"
+	"image/color"
 
 	"gocv.io/x/gocv"
 )
@@ -33,45 +36,46 @@ var clickTarget = ClickTarget{
 }
 
 var debugMode bool
+var logChan = make(chan string, 100)
 
-func IsAppRunning(appName string) bool {
-	cmd := exec.Command("osascript", "-e", `
-        tell application "System Events"
-            set appList to (name of every process)
-            return appList
-        end tell
-    `)
-	out, err := cmd.Output()
-	if err != nil {
-		log.Printf("Error detecting application: %v", err)
-		return false
+func logRoutine() {
+	for logMsg := range logChan {
+		log.Println(logMsg)
 	}
-	return strings.Contains(strings.ToLower(string(out)), strings.ToLower(appName))
 }
 
-func LocateWindow(appName string) (int, int, int, int, error) {
+func IsAppRunningAndLocateWindow(appName string) (bool, int, int, int, int, error) {
 	script := `
         tell application "System Events"
-            set appProcess to first process whose name is "` + appName + `"
-            set appWindow to first window of appProcess
-            set {x, y} to position of appWindow
-            set {width, height} to size of appWindow
-            return x & "," & y & "," & width & "," & height
+            set appList to (name of every process)
+            if "` + appName + `" is in appList then
+                set appProcess to first process whose name is "` + appName + `"
+                set appWindow to first window of appProcess
+                set {x, y} to position of appWindow
+                set {width, height} to size of appWindow
+                return "true," & x & "," & y & "," & width & "," & height
+            else
+                return "false"
+            end if
         end tell
     `
 	cmd := exec.Command("osascript", "-e", script)
 	out, err := cmd.Output()
 	if err != nil {
-		return 0, 0, 0, 0, fmt.Errorf("could not locate window: %v", err)
+		return false, 0, 0, 0, 0, fmt.Errorf("could not locate window: %v", err)
 	}
 
-	dimensions := strings.TrimSpace(string(out))
-	dimensionSlice := strings.FieldsFunc(dimensions, func(r rune) bool {
+	output := strings.TrimSpace(string(out))
+	if strings.HasPrefix(output, "false") {
+		return false, 0, 0, 0, 0, nil
+	}
+
+	dimensionSlice := strings.FieldsFunc(output[5:], func(r rune) bool {
 		return r == ',' || r == ' '
 	})
 
 	if len(dimensionSlice) != 4 {
-		return 0, 0, 0, 0, fmt.Errorf("unexpected number of dimensions: %v", dimensionSlice)
+		return false, 0, 0, 0, 0, fmt.Errorf("unexpected number of dimensions: %v", dimensionSlice)
 	}
 
 	x, _ := strconv.Atoi(strings.TrimSpace(dimensionSlice[0]))
@@ -79,56 +83,46 @@ func LocateWindow(appName string) (int, int, int, int, error) {
 	width, _ := strconv.Atoi(strings.TrimSpace(dimensionSlice[2]))
 	height, _ := strconv.Atoi(strings.TrimSpace(dimensionSlice[3]))
 
-	return x, y, width, height, nil
+	return true, x, y, width, height, nil
 }
 
 func FocusApp(appName string) {
 	cmd := exec.Command("osascript", "-e", fmt.Sprintf(`tell application "%s" to activate`, appName))
 	if err := cmd.Run(); err != nil {
-		log.Printf("Error focusing application %s: %v", appName, err)
+		logChan <- fmt.Sprintf("Error focusing application %s: %v", appName, err)
 	}
 }
 
-func CaptureScreen(windowX, windowY, width, height int) gocv.Mat {
+func CaptureScreen(windowX, windowY, width, height int, screenChan chan gocv.Mat, wg *sync.WaitGroup) {
+	defer wg.Done()
 	outputPath := "/tmp/screenshot.png"
 	cmd := exec.Command("screencapture", "-R", fmt.Sprintf("%d,%d,%d,%d", windowX, windowY, width, height), outputPath)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	if err := cmd.Start(); err != nil {
-		log.Printf("Error starting screen capture: %v", err)
-		return gocv.NewMat()
-	}
-	done := make(chan error, 1)
-	go func() {
-		done <- cmd.Wait()
-	}()
-
-	select {
-	case <-ctx.Done():
-		if err := cmd.Process.Kill(); err != nil {
-			log.Printf("Failed to kill screen capture process: %v", err)
-		}
-		log.Println("Screen capture timed out")
-		return gocv.NewMat()
-	case err := <-done:
-		if err != nil {
-			log.Printf("Error capturing screen: %v", err)
-			return gocv.NewMat()
-		}
+	if err := cmd.Run(); err != nil {
+		logChan <- fmt.Sprintf("Error capturing screen: %v", err)
+		screenChan <- gocv.NewMat()
+		return
 	}
 
 	img := gocv.IMRead(outputPath, gocv.IMReadColor)
 	if img.Empty() {
-		log.Println("Failed to load screenshot")
-		return gocv.NewMat()
+		logChan <- "Failed to load screenshot"
+		screenChan <- gocv.NewMat()
+		return
 	}
 
-	return img
+	screenChan <- img
 }
 
-func SearchAndClick(template gocv.Mat, screen gocv.Mat, windowX, windowY, windowWidth, windowHeight int) bool {
+func SearchAndClick(template gocv.Mat, screenChan chan gocv.Mat, windowX, windowY, windowWidth, windowHeight int, wg *sync.WaitGroup) {
+	defer wg.Done()
+	screen := <-screenChan
+	if screen.Empty() {
+		logChan <- "No valid screenshot received"
+		return
+	}
+	defer screen.Close()
+
 	result := gocv.NewMat()
 	defer result.Close()
 
@@ -157,22 +151,19 @@ func SearchAndClick(template gocv.Mat, screen gocv.Mat, windowX, windowY, window
 			// Save the debug screenshot
 			debugPath := fmt.Sprintf("%s-debug.png", clickTarget.Name)
 			if ok := gocv.IMWrite(debugPath, screen); !ok {
-				log.Printf("Error saving debug screenshot: %s", debugPath)
+				logChan <- fmt.Sprintf("Error saving debug screenshot: %s", debugPath)
 			} else {
-				log.Printf("Debug screenshot saved: %s", debugPath)
+				logChan <- fmt.Sprintf("Debug screenshot saved: %s", debugPath)
 			}
 		}
 
 		cmd := exec.Command("cliclick", fmt.Sprintf("c:%d,%d", adjustedX, adjustedY))
 		if err := cmd.Run(); err != nil {
-			log.Printf("Error performing click: %v", err)
-			return false
+			logChan <- fmt.Sprintf("Error performing click: %v", err)
+			return
 		}
-		log.Printf("Click performed at position: (%d, %d)", adjustedX, adjustedY)
-		return true
+		logChan <- fmt.Sprintf("Click performed at position: (%d, %d)", adjustedX, adjustedY)
 	}
-
-	return false
 }
 
 func main() {
@@ -201,17 +192,17 @@ func main() {
 	}
 
 	log.SetOutput(os.Stdout)
-	log.Println("Starting Whiteout Survival helper")
+	go logRoutine()
+	logChan <- "Starting Whiteout Survival helper"
 
 	signalChannel := make(chan os.Signal, 1)
 	signal.Notify(signalChannel, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-signalChannel
-		log.Println("Shutting down...")
+		logChan <- "Shutting down..."
+		close(logChan)
 		os.Exit(0)
 	}()
-
-	appName := "WhiteoutSurvival"
 
 	templatePath := filepath.Join("images", "handshake_icon.png")
 	template := gocv.IMRead(templatePath, gocv.IMReadColor)
@@ -220,7 +211,7 @@ func main() {
 	}
 	defer template.Close()
 
-	log.Printf("Template image loaded successfully from: %s", templatePath)
+	logChan <- fmt.Sprintf("Template image loaded successfully from: %s", templatePath)
 
 	// Initialize random number generator if random delay is enabled
 	if *randomDelay {
@@ -228,59 +219,51 @@ func main() {
 	}
 
 	iterationsRun := 0
-	helpsCount := 0
+	var wg sync.WaitGroup
+	screenChan := make(chan gocv.Mat, 1)
+
 	for *iterationCount == 0 || iterationsRun < *iterationCount {
 		iterationsRun++
-		log.Printf("Starting iteration %d", iterationsRun)
+		logChan <- fmt.Sprintf("Starting iteration %d", iterationsRun)
 
-		if IsAppRunning(appName) {
-			FocusApp(appName)
+		isRunning, x, y, width, height, err := IsAppRunningAndLocateWindow("WhiteoutSurvival")
+		if err != nil {
+			logChan <- fmt.Sprintf("Error locating window: %v", err)
+			continue
+		}
+
+		if isRunning {
+			FocusApp("WhiteoutSurvival")
 			time.Sleep(500 * time.Millisecond)
 
-			x, y, width, height, err := LocateWindow(appName)
-			if err != nil {
-				log.Printf("Error locating window: %v", err)
-				continue
-			}
+			wg.Add(1)
+			go CaptureScreen(x, y, width, height, screenChan, &wg)
 
-			screen := CaptureScreen(x, y, width, height)
-			if screen.Empty() {
-				log.Println("Failed to capture screen")
-				continue
-			}
+			wg.Add(1)
+			go SearchAndClick(template, screenChan, x, y, width, height, &wg)
 
-			matched := SearchAndClick(template, screen, x, y, width, height)
-
-			if matched {
-				helpsCount++
-				log.Printf("Handshake icon found and clicked (Total helps: %d)", helpsCount)
-			} else {
-				log.Println("Handshake icon not found in this iteration")
-			}
-
-			screen.Close()
+			wg.Wait()
 		} else {
-			log.Println("Application not running")
+			logChan <- "Application not running"
 		}
 
 		// Print iteration progress and help count
 		if *iterationCount > 0 {
-			log.Printf("Completed iteration %d of %d. Total helps: %d", iterationsRun, *iterationCount, helpsCount)
+			logChan <- fmt.Sprintf("Completed iteration %d of %d", iterationsRun, *iterationCount)
 		} else {
-			log.Printf("Completed iteration %d. Total helps: %d", iterationsRun, helpsCount)
+			logChan <- fmt.Sprintf("Completed iteration %d", iterationsRun)
 		}
 
 		// Use random delay if enabled, otherwise use fixed delay
+		var delay time.Duration
 		if *randomDelay {
-			delay := time.Duration(rand.Intn(*iterationDelay)) * time.Second
-			log.Printf("Waiting for %v before next iteration", delay)
-			time.Sleep(delay)
+			delay = time.Duration(rand.Intn(*iterationDelay)) * time.Second
 		} else {
-			delay := time.Duration(*iterationDelay) * time.Second
-			log.Printf("Waiting for %v before next iteration", delay)
-			time.Sleep(delay)
+			delay = time.Duration(*iterationDelay) * time.Second
 		}
+		logChan <- fmt.Sprintf("Waiting for %v before next iteration", delay)
+		time.Sleep(delay)
 	}
 
-	log.Printf("Completed all %d iterations. Total helps: %d. Exiting.", iterationsRun, helpsCount)
+	logChan <- fmt.Sprintf("Completed all %d iterations. Exiting.", iterationsRun)
 }
