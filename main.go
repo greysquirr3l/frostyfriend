@@ -4,6 +4,8 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"image"
+	"image/color"
 	"log"
 	"math/rand"
 	"os"
@@ -29,6 +31,8 @@ var clickTarget = ClickTarget{
 	X:    1.40,
 	Y:    1.78,
 }
+
+var debugMode bool
 
 func IsAppRunning(appName string) bool {
 	cmd := exec.Command("osascript", "-e", `
@@ -96,7 +100,6 @@ func CaptureScreen(windowX, windowY, width, height int) gocv.Mat {
 		log.Printf("Error starting screen capture: %v", err)
 		return gocv.NewMat()
 	}
-
 	done := make(chan error, 1)
 	go func() {
 		done <- cmd.Wait()
@@ -143,6 +146,23 @@ func SearchAndClick(template gocv.Mat, screen gocv.Mat, windowX, windowY, window
 		adjustedX := windowX + int(float64(centerX)*scaleX)
 		adjustedY := windowY + int(float64(centerY)*scaleY)
 
+		if debugMode {
+			// Draw green rectangle around the matched region
+			rect := image.Rect(maxLoc.X, maxLoc.Y, maxLoc.X+template.Cols(), maxLoc.Y+template.Rows())
+			gocv.Rectangle(&screen, rect, color.RGBA{0, 255, 0, 0}, 2)
+
+			// Draw red circle where the click will take place
+			gocv.Circle(&screen, image.Pt(centerX, centerY), 5, color.RGBA{255, 0, 0, 0}, -1)
+
+			// Save the debug screenshot
+			debugPath := fmt.Sprintf("%s-debug.png", clickTarget.Name)
+			if ok := gocv.IMWrite(debugPath, screen); !ok {
+				log.Printf("Error saving debug screenshot: %s", debugPath)
+			} else {
+				log.Printf("Debug screenshot saved: %s", debugPath)
+			}
+		}
+
 		cmd := exec.Command("cliclick", fmt.Sprintf("c:%d,%d", adjustedX, adjustedY))
 		if err := cmd.Run(); err != nil {
 			log.Printf("Error performing click: %v", err)
@@ -161,6 +181,7 @@ func main() {
 	randomDelay := flag.Bool("random", false, "Use random delay between 0 and specified delay")
 	iterationCount := flag.Int("iterations", 0, "Number of iterations to run (0 for infinite)")
 	helpFlag := flag.Bool("help", false, "Display help information")
+	flag.BoolVar(&debugMode, "debug", false, "Enable debug mode to save annotated screenshots")
 
 	// Custom usage function to display help
 	flag.Usage = func() {
