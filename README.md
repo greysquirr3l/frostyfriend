@@ -20,20 +20,25 @@ This script automates interactions with the game "Whiteout Survival." It locates
 ## Installation
 1. Ensure you have Go installed on your system.
 2. Install the GoCV package:
+   
    ```sh
    go get -u -d gocv.io/x/gocv
    ```
-3. Install `cliclick` for simulating mouse clicks:
+   
+4. Install `cliclick` for simulating mouse clicks:
    ```sh
    brew install cliclick
    ```
-4. Download or create the necessary image templates (`big_x.png` and `handshake_icon.png`) and store them in an `images` directory in the same path as the script.
+   
+5. Download or create the necessary image templates (`big_x.png` and `handshake_icon.png`) and store them in an `images` directory in the same path as the script.
 
 ## Usage
 To run the script, use the following command:
 
 ```sh
 go run main.go [options]
+```
+
 =======
 Set the WOS window to any screen that can see the Alliance Help popup.  If you are on a screen where the popup is not displayed, the script will still try to identify it, but it won't do anything because it won't find it.
 
