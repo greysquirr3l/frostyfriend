@@ -1,4 +1,4 @@
-// main.go - revision 7
+// main.go - revision 9
 
 package main
 
@@ -37,6 +37,7 @@ var clickTarget = ClickTarget{
 
 var debugMode bool
 var logChan = make(chan string, 100)
+var totalClicks int
 
 func logRoutine() {
 	for logMsg := range logChan {
@@ -114,15 +115,7 @@ func CaptureScreen(windowX, windowY, width, height int, screenChan chan gocv.Mat
 	screenChan <- img
 }
 
-func SearchAndClick(template gocv.Mat, screenChan chan gocv.Mat, windowX, windowY, windowWidth, windowHeight int, wg *sync.WaitGroup) {
-	defer wg.Done()
-	screen := <-screenChan
-	if screen.Empty() {
-		logChan <- "No valid screenshot received"
-		return
-	}
-	defer screen.Close()
-
+func SearchAndClick(template gocv.Mat, screen gocv.Mat, windowX, windowY, windowWidth, windowHeight int, targetName string) bool {
 	result := gocv.NewMat()
 	defer result.Close()
 
@@ -141,15 +134,19 @@ func SearchAndClick(template gocv.Mat, screenChan chan gocv.Mat, windowX, window
 		adjustedY := windowY + int(float64(centerY)*scaleY)
 
 		if debugMode {
-			// Draw green rectangle around the matched region
+			// Draw blue rectangle around the matched region for big_x.png, green for others
+			rectColor := color.RGBA{0, 255, 0, 0} // Green for handshake_icon.png
+			if targetName == "big_x" {
+				rectColor = color.RGBA{0, 0, 255, 0} // Blue for big_x.png
+			}
 			rect := image.Rect(maxLoc.X, maxLoc.Y, maxLoc.X+template.Cols(), maxLoc.Y+template.Rows())
-			gocv.Rectangle(&screen, rect, color.RGBA{0, 255, 0, 0}, 2)
+			gocv.Rectangle(&screen, rect, rectColor, 2)
 
 			// Draw red circle where the click will take place
 			gocv.Circle(&screen, image.Pt(centerX, centerY), 5, color.RGBA{255, 0, 0, 0}, -1)
 
 			// Save the debug screenshot
-			debugPath := fmt.Sprintf("%s-debug.png", clickTarget.Name)
+			debugPath := fmt.Sprintf("%s-debug.png", targetName)
 			if ok := gocv.IMWrite(debugPath, screen); !ok {
 				logChan <- fmt.Sprintf("Error saving debug screenshot: %s", debugPath)
 			} else {
@@ -160,10 +157,13 @@ func SearchAndClick(template gocv.Mat, screenChan chan gocv.Mat, windowX, window
 		cmd := exec.Command("cliclick", fmt.Sprintf("c:%d,%d", adjustedX, adjustedY))
 		if err := cmd.Run(); err != nil {
 			logChan <- fmt.Sprintf("Error performing click: %v", err)
-			return
+			return false
 		}
-		logChan <- fmt.Sprintf("Click performed at position: (%d, %d)", adjustedX, adjustedY)
+		totalClicks++
+		logChan <- fmt.Sprintf("Click performed on %s at position: (%d, %d) (Total clicks: %d)", targetName, adjustedX, adjustedY, totalClicks)
+		return true
 	}
+	return false
 }
 
 func main() {
@@ -204,14 +204,21 @@ func main() {
 		os.Exit(0)
 	}()
 
-	templatePath := filepath.Join("images", "handshake_icon.png")
-	template := gocv.IMRead(templatePath, gocv.IMReadColor)
-	if template.Empty() {
-		log.Fatalf("Error reading template image file: %s", templatePath)
+	handshakePath := filepath.Join("images", "handshake_icon.png")
+	handshakeTemplate := gocv.IMRead(handshakePath, gocv.IMReadColor)
+	if handshakeTemplate.Empty() {
+		log.Fatalf("Error reading template image file: %s", handshakePath)
 	}
-	defer template.Close()
+	defer handshakeTemplate.Close()
+	logChan <- fmt.Sprintf("Template image loaded successfully from: %s", handshakePath)
 
-	logChan <- fmt.Sprintf("Template image loaded successfully from: %s", templatePath)
+	bigXPath := filepath.Join("images", "big_x.png")
+	bigXTemplate := gocv.IMRead(bigXPath, gocv.IMReadColor)
+	if bigXTemplate.Empty() {
+		log.Fatalf("Error reading template image file: %s", bigXPath)
+	}
+	defer bigXTemplate.Close()
+	logChan <- fmt.Sprintf("Template image loaded successfully from: %s", bigXPath)
 
 	// Initialize random number generator if random delay is enabled
 	if *randomDelay {
@@ -239,10 +246,35 @@ func main() {
 			wg.Add(1)
 			go CaptureScreen(x, y, width, height, screenChan, &wg)
 
-			wg.Add(1)
-			go SearchAndClick(template, screenChan, x, y, width, height, &wg)
-
 			wg.Wait()
+
+			screen := <-screenChan
+			if screen.Empty() {
+				logChan <- "No valid screenshot received"
+				continue
+			}
+
+			// Search and click big_x.png first
+			if SearchAndClick(bigXTemplate, screen, x, y, width, height, "big_x") {
+				// Wait for 0.25 seconds before capturing the next screenshot
+				time.Sleep(250 * time.Millisecond)
+
+				// Capture the screen again after clicking big_x.png
+				wg.Add(1)
+				go CaptureScreen(x, y, width, height, screenChan, &wg)
+				wg.Wait()
+
+				screen = <-screenChan
+				if screen.Empty() {
+					logChan <- "No valid screenshot received after big_x click"
+					continue
+				}
+			}
+
+			// Search and click handshake_icon.png
+			SearchAndClick(handshakeTemplate, screen, x, y, width, height, "handshake_icon")
+
+			screen.Close()
 		} else {
 			logChan <- "Application not running"
 		}
