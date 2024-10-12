@@ -32,8 +32,17 @@ This script automates interactions with the game "Whiteout Survival." It locates
 ## Usage
 To run the script, use the following command:
 
+<<<<<<< HEAD
 ```sh
 go run main.go [options]
+=======
+Set the WOS window to any screen that can see the Alliance Help popup.  If you are on a screen where the popup is not displayed, the script will still try to identify it, but it won't do anything because it won't find it.
+
+Run the script with the following command:
+
+```
+go run main.go [flags]
+>>>>>>> main
 ```
 
 ### Command-Line Options
