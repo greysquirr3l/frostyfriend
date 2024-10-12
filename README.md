@@ -32,7 +32,6 @@ This script automates interactions with the game "Whiteout Survival." It locates
 ## Usage
 To run the script, use the following command:
 
-<<<<<<< HEAD
 ```sh
 go run main.go [options]
 =======
@@ -42,7 +41,6 @@ Run the script with the following command:
 
 ```
 go run main.go [flags]
->>>>>>> main
 ```
 
 ### Command-Line Options
