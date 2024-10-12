@@ -1,4 +1,4 @@
-# Whiteout Survival Helper
+# Frosty Friend - Whiteout Survival Helper
 
 This script automates interactions with the game "Whiteout Survival." It locates the game's window, performs image matching to identify specific in-game elements, and automates mouse clicks to assist with gameplay.
 
