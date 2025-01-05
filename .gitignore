@@ -1,4 +1,4 @@
-# .gitignore 
+# .gitignore
 
 # Binaries for programs and plugins
 *.exe
@@ -43,4 +43,5 @@ vendor
 app.log
 whiteout_survival_bot.log
 matched_result_nomatch.png
-main_backup.go.bak
+main.go.bak
+frostyfriend

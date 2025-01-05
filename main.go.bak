@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"image"
+	"image/color"
 
 	"gocv.io/x/gocv"
 )
@@ -26,6 +27,18 @@ var (
 	logChan     = make(chan string, 100)
 	totalClicks int
 )
+
+type ClickTarget struct {
+	Name string
+	X    float64 // Percentage of window width
+	Y    float64 // Percentage of window height
+}
+
+var clickTarget = ClickTarget{
+	Name: "Handshake",
+	X:    1.40,
+	Y:    1.78,
+}
 
 func logRoutine() {
 	for logMsg := range logChan {
@@ -99,9 +112,18 @@ func CaptureScreen(windowX, windowY, width, height int, screenChan chan gocv.Mat
 		return
 	}
 
+	time.Sleep(100 * time.Millisecond)
+
 	cmd := exec.Command("screencapture", "-x", "-R", fmt.Sprintf("%d,%d,%d,%d", windowX, windowY, width, height), outputPath)
 	if err := cmd.Run(); err != nil {
 		logChan <- fmt.Sprintf("Error capturing screen: %v", err)
+		screenChan <- gocv.NewMat()
+		return
+	}
+
+	info, err := os.Stat(outputPath)
+	if err != nil || info.Size() == 0 {
+		logChan <- "Screenshot file is empty or does not exist"
 		screenChan <- gocv.NewMat()
 		return
 	}
@@ -116,68 +138,61 @@ func CaptureScreen(windowX, windowY, width, height int, screenChan chan gocv.Mat
 	screenChan <- img
 }
 
-func OptimizedSearchAndClick(template gocv.Mat, screen gocv.Mat, windowX, windowY, windowWidth, windowHeight int, targetName string) bool {
+func SearchAndClick(template gocv.Mat, screen gocv.Mat, windowX, windowY, windowWidth, windowHeight int, targetName string) bool {
 	if template.Empty() || screen.Empty() {
 		logChan <- fmt.Sprintf("Empty template or screen for %s", targetName)
 		return false
 	}
 
-	if screen.Channels() > 1 {
-		gocv.CvtColor(screen, &screen, gocv.ColorBGRToGray)
-	}
-	if template.Channels() > 1 {
-		gocv.CvtColor(template, &template, gocv.ColorBGRToGray)
+	if template.Cols() > screen.Cols() || template.Rows() > screen.Rows() {
+		logChan <- fmt.Sprintf("Template larger than screen for %s", targetName)
+		return false
 	}
 
-	var bestMatch float32
-	var bestLocation image.Point
-	for scale := 0.5; scale <= 2.0; scale += 0.1 {
-		resized := gocv.NewMat()
-		gocv.Resize(template, &resized, image.Point{}, scale, scale, gocv.InterpolationLinear)
+	result := gocv.NewMat()
+	defer result.Close()
 
-		result := gocv.NewMat()
-		gocv.MatchTemplate(screen, resized, &result, gocv.TmCcoeffNormed, gocv.NewMat())
+	gocv.MatchTemplate(screen, template, &result, gocv.TmCcoeffNormed, gocv.NewMat())
 
-		_, maxVal, _, maxLoc := gocv.MinMaxLoc(result)
-		if float32(maxVal) > bestMatch {
-			bestMatch = float32(maxVal)
-			bestLocation = maxLoc
-		}
-		resized.Close()
-		result.Close()
-	}
+	_, maxVal, _, maxLoc := gocv.MinMaxLoc(result)
 
-	threshold := 0.80
+	var threshold float32 = 0.65
 	if targetName == "big_x" {
-		threshold = 0.90
+		threshold = 0.75
 	}
 
-	if bestMatch >= float32(threshold) {
-		centerX := bestLocation.X + (template.Cols() / 2)
-		centerY := bestLocation.Y + (template.Rows() / 2)
-
-		logChan <- fmt.Sprintf("Center coordinates before scaling: (%d, %d)", centerX, centerY)
+	if maxVal >= threshold {
+		centerX := maxLoc.X + (template.Cols() / 2)
+		centerY := maxLoc.Y + (template.Rows() / 2)
 
 		scaleX := float64(windowWidth) / float64(screen.Cols())
 		scaleY := float64(windowHeight) / float64(screen.Rows())
 
-		logChan <- fmt.Sprintf("Scaling factors: scaleX=%.2f, scaleY=%.2f", scaleX, scaleY)
-
 		adjustedX := windowX + int(float64(centerX)*scaleX)
 		adjustedY := windowY + int(float64(centerY)*scaleY)
 
-		logChan <- fmt.Sprintf("Adjusted click coordinates: (%d, %d)", adjustedX, adjustedY)
-		logChan <- fmt.Sprintf("Screen dimensions: cols=%d, rows=%d", screen.Cols(), screen.Rows())
+		adjustedX += rand.Intn(3) - 1
+		adjustedY += rand.Intn(3) - 1
 
-		if adjustedX < 0 || adjustedY < 0 || adjustedX > windowX+windowWidth || adjustedY > windowY+windowHeight {
-			logChan <- fmt.Sprintf("Invalid click coordinates: (%d, %d) for %s", adjustedX, adjustedY, targetName)
-			return false
+		if debugMode {
+			debugScreen := screen.Clone()
+			defer debugScreen.Close()
+
+			rect := image.Rect(maxLoc.X, maxLoc.Y, maxLoc.X+template.Cols(), maxLoc.Y+template.Rows())
+			gocv.Rectangle(&debugScreen, rect, color.RGBA{0, 255, 0, 0}, 2)
+			gocv.Circle(&debugScreen, image.Pt(centerX, centerY), 5, color.RGBA{255, 0, 0, 0}, -1)
+
+			debugPath := fmt.Sprintf("/tmp/%s-debug-%d.png", targetName, time.Now().Unix())
+			if ok := gocv.IMWrite(debugPath, debugScreen); !ok {
+				logChan <- fmt.Sprintf("Error saving debug screenshot: %s", debugPath)
+			} else {
+				logChan <- fmt.Sprintf("Debug screenshot saved: %s", debugPath)
+			}
 		}
 
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 
 		cmd := exec.Command("cliclick", fmt.Sprintf("c:%d,%d", adjustedX, adjustedY))
-		logChan <- fmt.Sprintf("Executing cliclick command: c:%d,%d", adjustedX, adjustedY)
 		if err := cmd.Run(); err != nil {
 			logChan <- fmt.Sprintf("Error performing click: %v", err)
 			return false
@@ -185,11 +200,11 @@ func OptimizedSearchAndClick(template gocv.Mat, screen gocv.Mat, windowX, window
 
 		totalClicks++
 		logChan <- fmt.Sprintf("Click performed on %s at (%d, %d) (Total clicks: %d, Confidence: %.2f)",
-			targetName, adjustedX, adjustedY, totalClicks, bestMatch)
+			targetName, adjustedX, adjustedY, totalClicks, maxVal)
 		return true
 	}
 
-	logChan <- fmt.Sprintf("No match found for %s: Best Confidence=%.2f", targetName, bestMatch)
+	logChan <- fmt.Sprintf("No match found for %s (Best match: %.2f)", targetName, maxVal)
 	return false
 }
 
@@ -197,8 +212,15 @@ func main() {
 	iterationDelay := flag.Int("delay", 10, "Delay between iterations in seconds")
 	randomDelay := flag.Bool("random", false, "Use random delay")
 	iterationCount := flag.Int("iterations", 0, "Number of iterations (0 for infinite)")
+	helpFlag := flag.Bool("help", false, "Display help information")
 	flag.BoolVar(&debugMode, "debug", false, "Enable debug mode")
+
 	flag.Parse()
+
+	if *helpFlag {
+		flag.Usage()
+		os.Exit(0)
+	}
 
 	log.SetOutput(os.Stdout)
 	go logRoutine()
@@ -226,7 +248,7 @@ func main() {
 	for *iterationCount == 0 || totalClicks < *iterationCount {
 		isRunning, x, y, width, height, err := IsAppRunningAndLocateWindow("whiteoutsurvival")
 		if err != nil || !isRunning {
-			logChan <- fmt.Sprintf("Application not running or error: %v", err)
+			logChan <- "Application not running or error occurred"
 			time.Sleep(time.Duration(*iterationDelay) * time.Second)
 			continue
 		}
@@ -234,16 +256,16 @@ func main() {
 		FocusApp("WhiteoutSurvival")
 		wg.Add(1)
 		go CaptureScreen(x, y, width, height, screenChan, &wg)
-		wg.Wait()
 
+		wg.Wait()
 		screen := <-screenChan
 		if screen.Empty() {
 			logChan <- "No valid screenshot received"
 			continue
 		}
 
-		OptimizedSearchAndClick(bigXTemplate, screen, x, y, width, height, "big_x")
-		OptimizedSearchAndClick(handshakeTemplate, screen, x, y, width, height, "handshake_icon")
+		SearchAndClick(bigXTemplate, screen, x, y, width, height, "big_x")
+		SearchAndClick(handshakeTemplate, screen, x, y, width, height, "handshake_icon")
 
 		screen.Close()
 
