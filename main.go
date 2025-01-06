@@ -176,6 +176,7 @@ func OptimizedSearchAndClick(template gocv.Mat, screen gocv.Mat, windowX, window
 
 		time.Sleep(100 * time.Millisecond)
 
+		// Perform the click
 		cmd := exec.Command("cliclick", fmt.Sprintf("c:%d,%d", adjustedX, adjustedY))
 		logChan <- fmt.Sprintf("Executing cliclick command: c:%d,%d", adjustedX, adjustedY)
 		if err := cmd.Run(); err != nil {
@@ -186,6 +187,17 @@ func OptimizedSearchAndClick(template gocv.Mat, screen gocv.Mat, windowX, window
 		totalClicks++
 		logChan <- fmt.Sprintf("Click performed on %s at (%d, %d) (Total clicks: %d, Confidence: %.2f)",
 			targetName, adjustedX, adjustedY, totalClicks, bestMatch)
+
+		// Move cursor to a random position inside the application window
+		randomX := windowX + rand.Intn(windowWidth)
+		randomY := windowY + rand.Intn(windowHeight)
+		cmd = exec.Command("cliclick", fmt.Sprintf("m:%d,%d", randomX, randomY))
+		logChan <- fmt.Sprintf("Moving cursor to random position inside the window: (%d, %d)", randomX, randomY)
+		if err := cmd.Run(); err != nil {
+			logChan <- fmt.Sprintf("Error moving cursor: %v", err)
+			return false
+		}
+
 		return true
 	}
 
