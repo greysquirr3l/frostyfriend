@@ -16,17 +16,21 @@ jobs:
         with:
           go-version: '1.23'
 
-      - name: Install Dependencies
+      - name: Install Dependencies ARM64
         run: |
-          brew install opencv
-          
+          arch -arm64 brew install opencv
+
+      - name: Install Dependencies AMD64
+        run: |
+          arch -x86_64 brew install opencv
+
       - name: Build ARM64
         run: |
-          CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 go build -o frostyfriend-darwin-arm64
+          arch -arm64 go build -o frostyfriend-darwin-arm64
           
       - name: Build AMD64
         run: |
-          CGO_ENABLED=1 GOOS=darwin GOARCH=amd64 go build -o frostyfriend-darwin-amd64
+          arch -x86_64 go build -o frostyfriend-darwin-amd64
           
       - name: Create Release
         uses: softprops/action-gh-release@v1
