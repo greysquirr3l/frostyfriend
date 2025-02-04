@@ -1,4 +1,4 @@
-# .gitignore
+.gitignore
 
 # Binaries for programs and plugins
 *.exe
@@ -45,3 +45,4 @@ whiteout_survival_bot.log
 matched_result_nomatch.png
 main.go.bak
 frostyfriend
+*.bak

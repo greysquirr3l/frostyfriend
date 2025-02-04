@@ -1,0 +1,444 @@
+package main
+
+import (
+	"fmt"
+	"image"
+	"log"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/urfave/cli/v2"
+	"gocv.io/x/gocv"
+)
+
+// Global variables
+var (
+    logChan     = make(chan string, 100)
+    totalClicks int
+    mu          sync.Mutex // Add mutex to safely update totalClicks
+	appName  = "whiteoutsurvival"
+)
+
+func logRoutine() {
+	for logMsg := range logChan {
+		log.Printf("%s - %s", time.Now().Format("15:04:05"), logMsg)
+	}
+}
+
+func IsAppRunningAndLocateWindow() (bool, int, int, int, int, error) {
+    script := `
+        tell application "System Events"
+            if exists (processes where name contains "whiteoutsurvival") then
+                tell application "whiteoutsurvival" to activate
+                delay 0.5
+                tell (first process where name contains "whiteoutsurvival")
+                    try
+                        set appWindow to first window
+                        set {x, y} to position of appWindow
+                        set {w, h} to size of appWindow
+                        return "true," & x & "," & y & "," & w & h
+                    on error errMsg
+                        return "false,error," & errMsg
+                    end try
+                end tell
+            else
+                return "false,not_running"
+            end if
+        end tell`
+
+    cmd := exec.Command("osascript", "-e", script)
+    out, err := cmd.Output()
+    if err != nil {
+        return false, 0, 0, 0, 0, fmt.Errorf("AppleScript error: %v", err)
+    }
+
+    parts := strings.Split(strings.TrimSpace(string(out)), ",")
+    
+    if len(parts) < 5 {
+        return false, 0, 0, 0, 0, fmt.Errorf("insufficient window data: %v", parts)
+    }
+
+    x, _ := strconv.Atoi(parts[1])
+    y, _ := strconv.Atoi(parts[2])
+    w, _ := strconv.Atoi(parts[3])
+    h, _ := strconv.Atoi(parts[4])
+
+    return true, x, y, w, h, nil
+}
+
+func FocusApp() {
+    cmd := exec.Command("osascript", "-e", fmt.Sprintf(`tell application "%s" to activate`, appName))
+    if err := cmd.Run(); err != nil {
+        logChan <- fmt.Sprintf("Error focusing application %s: %v", appName, err)
+    }
+}
+
+func CaptureScreen(windowX, windowY, width, height int, screenChan chan gocv.Mat, wg *sync.WaitGroup) {
+	defer wg.Done()
+	outputPath := "/tmp/screenshot.png"
+
+	if width <= 0 || height <= 0 {
+		logChan <- fmt.Sprintf("Invalid dimensions: width=%d, height=%d", width, height)
+		screenChan <- gocv.NewMat()
+		return
+	}
+
+	cmd := exec.Command("screencapture", "-x", "-R", fmt.Sprintf("%d,%d,%d,%d", windowX, windowY, width, height), outputPath)
+	if err := cmd.Run(); err != nil {
+		logChan <- fmt.Sprintf("Error capturing screen: %v", err)
+		screenChan <- gocv.NewMat()
+		return
+	}
+
+	img := gocv.IMRead(outputPath, gocv.IMReadColor)
+	if img.Empty() {
+		logChan <- "Failed to load screenshot"
+		screenChan <- gocv.NewMat()
+		return
+	}
+
+	screenChan <- img
+}
+
+func OptimizedSearchAndClick(
+    template gocv.Mat,
+    screen gocv.Mat,
+    windowX, windowY, windowWidth, windowHeight int,
+    targetName string,
+) bool {
+    if template.Empty() || screen.Empty() {
+        logChan <- fmt.Sprintf("Empty template or screen for %s", targetName)
+        return false
+    }
+
+    // Convert both to grayscale
+    grayScreen := gocv.NewMat()
+    gocv.CvtColor(screen, &grayScreen, gocv.ColorBGRToGray)
+    // Force CV_8U type
+    grayScreen.ConvertTo(&grayScreen, gocv.MatTypeCV8U)
+    defer grayScreen.Close()
+
+    grayTemplate := gocv.NewMat()
+    gocv.CvtColor(template, &grayTemplate, gocv.ColorBGRToGray)
+    // Force CV_8U type
+    grayTemplate.ConvertTo(&grayTemplate, gocv.MatTypeCV8U)
+    defer grayTemplate.Close()
+
+    var bestMatch float32
+    var bestLocation image.Point
+
+    for scale := 0.5; scale <= 2.0; scale += 0.1 {
+        resized := gocv.NewMat()
+        gocv.Resize(grayTemplate, &resized, image.Point{}, scale, scale, gocv.InterpolationLinear)
+
+        if resized.Empty() {
+            resized.Close()
+            continue
+        }
+
+        // Match template
+        result := gocv.NewMat()
+        gocv.MatchTemplate(grayScreen, resized, &result, gocv.TmCcoeffNormed, gocv.NewMat())
+        defer result.Close()
+
+        _, maxVal, _, maxLoc := gocv.MinMaxLoc(result)
+        if maxVal > bestMatch {
+            bestMatch = maxVal
+            bestLocation = maxLoc
+        }
+
+        resized.Close()
+    }
+
+    // Threshold your match here (example 0.8)
+    matchThreshold := float32(0.8)
+    if bestMatch >= matchThreshold {
+        logChan <- fmt.Sprintf("Best match for %s: %.2f at %v", targetName, bestMatch, bestLocation)
+        clickPosition := image.Point{
+            X: windowX + bestLocation.X,
+            Y: windowY + bestLocation.Y,
+        }
+		clickAtLocation(clickPosition)
+        return true
+    }
+    return false
+}
+
+func captureGameWindow() (gocv.Mat, error) {
+	isRunning, x, y, width, height, err := IsAppRunningAndLocateWindow()
+	if err != nil || !isRunning {
+		return gocv.NewMat(), fmt.Errorf("\nApplication not running or error: %v", err)
+	}
+
+    FocusApp()
+	var wg sync.WaitGroup
+	screenChan := make(chan gocv.Mat, 1)
+	wg.Add(1)
+	go CaptureScreen(x, y, width, height, screenChan, &wg)
+	wg.Wait()
+
+	screen := <-screenChan
+	if screen.Empty() {
+		return gocv.NewMat(), fmt.Errorf("\nNo valid screenshot received")
+	}
+
+	return screen, nil
+}
+
+
+func clickAtLocation(point image.Point) {
+    running, winX, winY, width, height, err := IsAppRunningAndLocateWindow()
+    if err != nil || !running {
+        logChan <- fmt.Sprintf("Error getting window position: %v", err)
+        return
+    }
+
+    // Focus window
+    focusPos := fmt.Sprintf("%d,%d", winX+10, winY+10)
+    if err := exec.Command("cliclick", "m", focusPos).Run(); err != nil {
+        logChan <- fmt.Sprintf("Focus move failed: %v", err)
+        return
+    }
+    time.Sleep(200 * time.Millisecond)
+
+    // Window center
+    centerX := winX + (width / 2)
+    centerY := winY + (height / 2)
+    centerPos := fmt.Sprintf("%d,%d", centerX, centerY)
+    if err := exec.Command("cliclick", "m", centerPos).Run(); err != nil {
+        logChan <- fmt.Sprintf("Center move failed: %v", err)
+        return
+    }
+    time.Sleep(200 * time.Millisecond)
+
+    // Target click
+    targetX := winX + point.X
+    targetY := winY + point.Y
+    targetPos := fmt.Sprintf("%d,%d", targetX, targetY)
+    
+    if err := exec.Command("cliclick", "m", targetPos).Run(); err != nil {
+        logChan <- fmt.Sprintf("Target move failed: %v", err)
+        return
+    }
+    time.Sleep(200 * time.Millisecond)
+    
+    if err := exec.Command("cliclick", "c", targetPos).Run(); err != nil {
+        logChan <- fmt.Sprintf("Click failed: %v", err)
+        return
+    }
+
+    mu.Lock()
+    totalClicks++
+    logChan <- fmt.Sprintf("Click %d: Window(%s) -> Center(%s) -> Target(%s)", 
+        totalClicks, focusPos, centerPos, targetPos)
+    mu.Unlock()
+}
+
+func saveDebugImage(img gocv.Mat, name string) {
+    timestamp := time.Now().Format("20060102-150405")
+    filename := fmt.Sprintf("debug_%s_%s.png", name, timestamp)
+    gocv.IMWrite(filename, img)
+    logChan <- fmt.Sprintf("Saved debug image: %s", filename)
+}
+
+// Below is the detectAndClick function added from the referenced commit.
+func detectAndClick(img gocv.Mat, tmplPath string, threshold float32, debug bool, winX, winY int) bool {
+    tmpl := gocv.IMRead(tmplPath, gocv.IMReadGrayScale)
+    if tmpl.Empty() {
+        logChan <- fmt.Sprintf("Cannot open template: %s", tmplPath)
+        return false
+    }
+    defer tmpl.Close()
+
+    gray := gocv.NewMat()
+    defer gray.Close()
+    gocv.CvtColor(img, &gray, gocv.ColorBGRToGray)
+
+    // Extract template name from path for logging
+    templateName := strings.TrimSuffix(filepath.Base(tmplPath), filepath.Ext(tmplPath))
+
+    // Optimal scales based on testing
+    scales := []float64{0.6, 0.7, 0.8}
+    var bestMatch float32
+    var bestLoc image.Point
+    var bestScale float64
+
+    for _, scale := range scales {
+        scaled := gocv.NewMat()
+        defer scaled.Close()
+        gocv.Resize(tmpl, &scaled, image.Point{}, scale, scale, gocv.InterpolationLinear)
+
+        result := gocv.NewMat()
+        defer result.Close()
+        gocv.MatchTemplate(gray, scaled, &result, gocv.TmCcoeffNormed, gocv.NewMat())
+        
+        _, maxVal, _, maxLoc := gocv.MinMaxLoc(result)
+        if maxVal > bestMatch {
+            bestMatch = maxVal
+            bestLoc = maxLoc
+            bestScale = scale
+        }
+
+        if debug {
+            logChan <- fmt.Sprintf("[%s] Scale %.1f match: %.2f%%", templateName, scale, maxVal * 100)
+        }
+    }
+
+    if bestMatch >= threshold {
+        clickX, clickY := adjustClickCoordinates(bestLoc.X, bestLoc.Y, winX, winY)
+        logChan <- fmt.Sprintf("[%s] Best match at scale %.1f (%.2f%%) - Clicking at (%d,%d)", 
+            templateName, bestScale, bestMatch * 100, clickX, clickY)
+        clickAtLocation(image.Point{X: clickX, Y: clickY})
+        return true
+    }
+
+    return false
+}
+
+// The commit also updated the main processing routine to call detectAndClick.
+func processWindow(window gocv.Mat, threshold float32, debug bool) {
+    isRunning, winX, winY, _, _, err := IsAppRunningAndLocateWindow()
+    if !isRunning || err != nil {
+        logChan <- "Could not get window coordinates"
+        return
+    }
+
+    if debug {
+        saveDebugImage(window, "window")
+    }
+    
+    // Check for big_x.png first
+    if detectAndClick(window, "images/big_x.png", threshold, debug, winX, winY) {
+        time.Sleep(1 * time.Second)
+        if newWin, err := captureGameWindow(); err == nil {
+            if debug {
+                saveDebugImage(newWin, "after_x")
+            }
+            detectAndClick(newWin, "images/handshake_icon.png", threshold, debug, winX, winY)
+            newWin.Close()
+        }
+    } else {
+        detectAndClick(window, "images/handshake_icon.png", threshold, debug, winX, winY)
+    }
+}
+
+func getScreenDimensions() (width int, height int, err error) {
+    script := `
+        tell application "Finder"
+            set screenSize to bounds of window of desktop
+            return item 3 of screenSize & "," & item 4 of screenSize
+        end tell`
+    
+    cmd := exec.Command("osascript", "-e", script)
+    out, err := cmd.Output()
+    if err != nil {
+        return 0, 0, fmt.Errorf("failed to get screen dimensions: %v", err)
+    }
+    
+    parts := strings.Split(strings.TrimSpace(string(out)), ",")
+    if len(parts) != 2 {
+        return 0, 0, fmt.Errorf("invalid screen dimensions output")
+    }
+    
+    width, _ = strconv.Atoi(parts[0])
+    height, _ = strconv.Atoi(parts[1])
+    return width, height, nil
+}
+
+func adjustClickCoordinates(x, y, windowX, windowY int) (int, int) {
+    screenWidth, screenHeight, err := getScreenDimensions()
+    if err != nil {
+        logChan <- fmt.Sprintf("Error getting screen dimensions: %v", err)
+        return x, y
+    }
+
+    // Add window position to template match coordinates
+    adjustedX := windowX + x
+    adjustedY := windowY + y
+
+    logChan <- fmt.Sprintf("Coordinate translation: (%d,%d) in window + (%d,%d) window position = (%d,%d) screen position", 
+        x, y, windowX, windowY, adjustedX, adjustedY)
+
+    // Bound check
+    if adjustedX < 0 || adjustedX >= screenWidth || adjustedY < 0 || adjustedY >= screenHeight {
+        logChan <- fmt.Sprintf("Warning: Click position (%d,%d) outside screen bounds %dx%d", 
+            adjustedX, adjustedY, screenWidth, screenHeight)
+    }
+
+    return adjustedX, adjustedY
+}
+
+func main() {
+    app := &cli.App{
+        Name:  "frostyfriend",
+        Usage: "Whiteout Survival automation helper",
+        Flags: []cli.Flag{
+            &cli.IntFlag{
+                Name:    "delay",
+                Aliases: []string{"d"},
+                Value:   5,
+                Usage:   "Delay between iterations in seconds",
+            },
+            &cli.BoolFlag{
+                Name:    "debug",
+                Aliases: []string{"v"},
+                Value:   false,
+                Usage:   "Enable debug logging",
+            },
+            &cli.Float64Flag{
+                Name:    "threshold",
+                Aliases: []string{"t"},
+                Value:   0.77,  // Changed from 0.8
+                Usage:   "Matching threshold (0.0-1.0)",
+            },
+        },
+        Action: func(c *cli.Context) error {
+            delay := c.Int("delay")
+            debug := c.Bool("debug")
+            threshold := float32(c.Float64("threshold"))
+            
+            // Start log routine
+            go logRoutine()
+            logChan <- "FrostyFriend started"
+
+            for {
+                // Log window capture attempt
+                logChan <- "Attempting to capture game window"
+                
+                running, x, y, w, h, err := IsAppRunningAndLocateWindow()
+                if err != nil {
+                    logChan <- fmt.Sprintf("Error: %v", err)
+                    time.Sleep(5 * time.Second)
+                    continue
+                }
+                
+                if (!running) {
+                    logChan <- "Game window not found"
+                    time.Sleep(5 * time.Second)
+                    continue
+                }
+
+                logChan <- fmt.Sprintf("Window found at x:%d y:%d w:%d h:%d", x, y, w, h)
+                window, err := captureGameWindow()
+                if err != nil || window.Empty() {
+                    logChan <- "Failed to capture window"
+                    continue
+                }
+
+                processWindow(window, threshold, debug) // Enable debug mode
+                window.Close()
+                
+                time.Sleep(time.Duration(delay) * time.Second)
+            }
+        },
+    }
+
+    if err := app.Run(os.Args); err != nil {
+        log.Fatal(err)
+    }
+}
