@@ -1,51 +1,47 @@
-# Frosty Friend - Whiteout Survival Helper
+# FrostyFriend
 
-This script automates interactions with the game "Whiteout Survival." It locates the game's window, performs image matching to identify specific in-game elements, and automates mouse clicks to assist with gameplay.
+FrostyFriend is a macOS-only automation helper for Whiteout Survival. It uses GoCV for computer vision and leverages AppleScript and Core Graphics for interacting with macOS applications.
 
 ## Features
-- Detects the presence of two specific images (`big_x.png` and `handshake_icon.png`) within the game window.
-- Automatically clicks on detected images based on their priority:
-  - If `big_x.png` is detected, it clicks to exit out of an unintended screen (e.g., chat window).
-  - It then waits briefly, takes another screenshot, and attempts to click on `handshake_icon.png`.
-- Annotates detected images with debug markers if `--debug` flag is enabled.
-- Supports infinite or specified number of iterations with configurable delay between iterations.
-- Uses `cliclick` to perform automated mouse clicks.
 
-## Prerequisites
-- macOS system (uses AppleScript and `osascript` to locate and interact with the game window).
-- GoCV library to perform image processing and template matching.
-- `cliclick` tool for command-line mouse click automation.
-- Game window must be visible for interactions to succeed.
+- Brings the target application to the foreground.
+- Captures screenshots of the application's window.
+- Performs multi-scale template matching.
+- Simulates mouse clicks and movements.
 
-## Installation
-1. Ensure you have Go installed on your system.
-2. Install the GoCV package:
-   
-   ```sh
-   go get -u -d gocv.io/x/gocv
-   ```
-   
-4. Install `cliclick` for simulating mouse clicks:
-   ```sh
-   brew install cliclick
-   ```
-   
-5. Download or create the necessary image templates (`big_x.png` and `handshake_icon.png`) and store them in an `images` directory in the same path as the script.
+## Requirements
+
+- macOS (this project is macOS-only)
+- Go 1.16 or later
+- [GoCV](https://gocv.io/)
+
+## OS Dependencies
+
+FrostyFriend uses macOS built-in tools:
+- AppleScript for window control.
+- The `screencapture` command for taking screenshots.
+- Core Graphics (via the ApplicationServices framework) for simulating mouse events.
+
+### Installing OpenCV (for GoCV)
+
+Install OpenCV and pkg-config via Homebrew:
+```
+brew install opencv pkg-config
+```
+
+### Installing GoCV
+
+Install GoCV using the following command:
+```
+go get -u -d gocv.io/x/gocv
+```
 
 ## Usage
+
 To run the script, use the following command:
 
 ```sh
 go run main.go [options]
-```
-
-=======
-Set the WOS window to any screen that can see the Alliance Help popup.  If you are on a screen where the popup is not displayed, the script will still try to identify it, but it won't do anything because it won't find it.
-
-Run the script with the following command:
-
-```
-go run main.go [flags]
 ```
 
 ### Command-Line Options

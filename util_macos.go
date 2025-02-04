@@ -36,50 +36,21 @@ func focusApp() {
 	}
 }
 
-// getAppWindowInfo uses AppleScript to retrieve the window position and size of the application.
-// It returns a Rect representing the window's global coordinates.
-/* func getAppWindowInfo() (Rect, error) {
-	script := fmt.Sprintf(`
-		tell application "System Events"
-			if exists (processes whose name is "%s") then
-				tell process "%s"
-					set theWindow to first window
-					set pos to position of theWindow
-					set sz to size of theWindow
-					return ((item 1 of pos) as text) & "," & ((item 2 of pos) as text) & "," & ((item 1 of sz) as text) & "," & ((item 2 of sz) as text)
-				end tell
-			else
-				return "NOTFOUND"
-			end if
-		end tell
-	`, appName, appName)
-	cmd := exec.Command("osascript", "-e", script)
-	out, err := cmd.Output()
-	if err != nil {
-		return Rect{}, fmt.Errorf("AppleScript error: %v", err)
-	}
-	result := strings.TrimSpace(string(out))
-	if result == "NOTFOUND" {
-		return Rect{}, fmt.Errorf("application not running")
-	}
-	parts := strings.Split(result, ",")
-	if len(parts) != 4 {
-		return Rect{}, fmt.Errorf("unexpected window info: %s", result)
-	}
-	x, err1 := strconv.Atoi(strings.TrimSpace(parts[0]))
-	y, err2 := strconv.Atoi(strings.TrimSpace(parts[1]))
-	w, err3 := strconv.Atoi(strings.TrimSpace(parts[2]))
-	h, err4 := strconv.Atoi(strings.TrimSpace(parts[3]))
-	if err1 != nil || err2 != nil || err3 != nil || err4 != nil {
-		return Rect{}, fmt.Errorf("error parsing window info: %s", result)
-	}
-	windowRect := Rect{X: x, Y: y, Width: w, Height: h}
-	logChan <- fmt.Sprintf("Found %s window: %+v", appName, windowRect)
-	return windowRect, nil
-} */
 
+//* getAppWindowInfo retrieves the global position and size of the application's window using AppleScript.
+//It performs the following steps:
+// 1. Checks if the process (with name appName) exists.
+// 2. Retrieves the count of windows for the process.
+//     - If the count is 0 (or "NO_WINDOW"), it activates the application to force it to show a window.
+// 3. Polls every 500 milliseconds (up to a timeout of 3 seconds) for the window to become available.
+// 4. Once a window is available, it retrieves its position and size (as text), converts these to integers,
+//    and returns a Rect containing the window's global coordinates.
+//     
+//If the application is not running or no window becomes available within 3 seconds, the function returns an error.
+//This polling mechanism is useful for apps that temporarily close or hide their window when idle.
+//*/
 func getAppWindowInfo() (Rect, error) {
-	// tryGetAppWindowInfo encapsulates the AppleScript call to get the window info.
+	// tryGetAppWindowInfo encapsulates the AppleScript call to get window info.
 	tryGetAppWindowInfo := func() (Rect, error) {
 		script := fmt.Sprintf(`
 			tell application "System Events"
@@ -127,8 +98,8 @@ func getAppWindowInfo() (Rect, error) {
 		return Rect{X: x, Y: y, Width: w, Height: h}, nil
 	}
 
-	// Before polling, check if there are any windows.
-	checkWindowsScript := fmt.Sprintf(`
+	// First, check if any window is available.
+	checkScript := fmt.Sprintf(`
 		tell application "System Events"
 			if exists (processes whose name is "%s") then
 				tell process "%s" to count windows
@@ -137,26 +108,17 @@ func getAppWindowInfo() (Rect, error) {
 			end if
 		end tell
 	`, appName, appName)
-
-	countCmd := exec.Command("osascript", "-e", checkWindowsScript)
-	countOut, err := countCmd.CombinedOutput()
-	if err != nil {
-		// Log the error but continue to polling.
-		logChan <- fmt.Sprintf("Error checking window count: %v, output: %s", err, string(countOut))
-	}
+	countCmd := exec.Command("osascript", "-e", checkScript)
+	countOut, _ := countCmd.CombinedOutput()
 	countStr := strings.TrimSpace(string(countOut))
 	if countStr == "0" || countStr == "NO_WINDOW" {
-		// If no window exists, try to activate or launch the app.
 		logChan <- fmt.Sprintf("No window available; activating %s...", appName)
-		// This command activates (or starts) the app.
 		activateCmd := exec.Command("osascript", "-e", fmt.Sprintf(`tell application "%s" to activate`, appName))
-		if err := activateCmd.Run(); err != nil {
-			logChan <- fmt.Sprintf("Error activating application %s: %v", appName, err)
-		}
+		activateCmd.Run() // Ignore errors here.
 	}
 
-	// Poll for a window every 500ms, up to 5 seconds.
-	timeout := time.After(5 * time.Second)
+	// Poll every 500ms, but timeout after 3 seconds.
+	timeout := time.After(3 * time.Second)
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 

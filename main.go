@@ -175,24 +175,36 @@ func detectAndClick(screen gocv.Mat, tmplPath string, window Rect, threshold flo
 	return false
 }
 
-// processWindow is the main routine that:
-//   - Retrieves the application window geometry.
-//   - Forces the application to come to the front.
-//   - Captures a screenshot of the window.
-//   - Runs template detection and clicking actions.
+/*
+processWindow is the primary routine that orchestrates each iteration of your automation process.
+It performs the following steps:
+
+  1. Calls focusApp() to activate and (if necessary) un-minimize the target application.
+  2. Waits briefly (e.g., 1 second) to allow the application to restore its window.
+  3. Invokes getAppWindowInfo() to retrieve the global coordinates of the application's window.
+     - If getAppWindowInfo() returns an error (e.g., due to no window available), the iteration is skipped.
+  4. Captures a screenshot of the application window using captureScreen().
+  5. Performs template matching and, if a target element is found and meets the threshold,
+     it triggers click events (including moving the mouse to a random coordinate inside the window afterward).
+  6. Logs minimal information or detailed debug output (depending on the debug flag).
+
+If any of the critical steps fail (e.g., window info cannot be obtained), the iteration is skipped,
+allowing the automation loop to continue trying on subsequent runs.
+*/
 func processWindow(threshold float32, debug bool) {
-	// Retrieve the window geometry via AppleScript.
+	// Try to focus the app first.
+	focusApp()
+	// Optionally increase the delay after focusing.
+	time.Sleep(1 * time.Second)
+
+	// Retrieve the window info.
 	window, err := getAppWindowInfo()
 	if err != nil {
-		logChan <- fmt.Sprintf("Error retrieving window info: %v", err)
-		return
+		logChan <- fmt.Sprintf("Skipping iteration: %v", err)
+		return // Skip this iteration if the window is not available.
 	}
 
-	// Bring the application to the front (and un-minimize if necessary).
-	focusApp()
-	time.Sleep(200 * time.Millisecond)
-
-	// Capture the screenshot of the application's window.
+	// Continue with your normal processing...
 	screen, err := captureScreen(window)
 	if err != nil || screen.Empty() {
 		logChan <- fmt.Sprintf("Failed to capture game window: %v", err)
