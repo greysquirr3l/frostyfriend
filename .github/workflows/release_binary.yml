@@ -16,21 +16,27 @@ jobs:
         with:
           go-version: '1.23'
 
-      - name: Install Dependencies ARM64
+      - name: Setup Rosetta
         run: |
-          arch -arm64 brew install opencv
+          /usr/sbin/softwareupdate --install-rosetta --agree-to-license
 
-      - name: Install Dependencies AMD64
+      - name: Install Dependencies
         run: |
-          arch -x86_64 brew install opencv
+          brew install opencv
 
       - name: Build ARM64
-        run: |
-          arch -arm64 go build -o frostyfriend-darwin-arm64
+        env:
+          CGO_ENABLED: 1
+          GOOS: darwin
+          GOARCH: arm64
+        run: go build -o frostyfriend-darwin-arm64
           
       - name: Build AMD64
-        run: |
-          arch -x86_64 go build -o frostyfriend-darwin-amd64
+        env:
+          CGO_ENABLED: 1
+          GOOS: darwin
+          GOARCH: amd64
+        run: go build -o frostyfriend-darwin-amd64
           
       - name: Create Release
         uses: softprops/action-gh-release@v1
