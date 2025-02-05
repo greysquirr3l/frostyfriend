@@ -3,7 +3,6 @@ name: Release Binary
 on:
   push:
     branches: [ main ]
-  push:
     tags:
       - 'v*'
 
